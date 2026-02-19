@@ -8,15 +8,18 @@ import {
   FlatList,
   Platform,
   Alert,
-  Animated as RNAnimated,
   Dimensions,
   KeyboardAvoidingView,
+  ActivityIndicator,
+  Modal,
+  ScrollView,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as Clipboard from "expo-clipboard";
+import * as ImagePicker from "expo-image-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import Animated, {
   useSharedValue,
@@ -30,7 +33,13 @@ import Animated, {
 } from "react-native-reanimated";
 import Colors from "@/constants/colors";
 import BarcodeView from "@/components/BarcodeView";
-import { encodeSSCC, calculateSSCCCheckDigit, isValidSSCCInput, BarcodeData } from "@/lib/code128";
+import {
+  encodeSSCC,
+  calculateSSCCCheckDigit,
+  BarcodeData,
+} from "@/lib/code128";
+import { getApiUrl } from "@/lib/query-client";
+import { fetch } from "expo/fetch";
 
 const { palette } = Colors;
 const HISTORY_KEY = "sscc_history";
@@ -51,7 +60,8 @@ function useSpeechRecognition() {
   useEffect(() => {
     if (Platform.OS === "web" && typeof window !== "undefined") {
       const SpeechRecognition =
-        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        (window as any).SpeechRecognition ||
+        (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
         setIsAvailable(true);
       }
@@ -61,7 +71,8 @@ function useSpeechRecognition() {
   const startListening = useCallback(() => {
     if (Platform.OS !== "web") return;
     const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
@@ -102,7 +113,15 @@ function useSpeechRecognition() {
   return { isListening, transcript, isAvailable, startListening, stopListening };
 }
 
-function HistoryRow({ item, onSelect, onDelete }: { item: HistoryItem; onSelect: (s: string) => void; onDelete: (id: string) => void }) {
+function HistoryRow({
+  item,
+  onSelect,
+  onDelete,
+}: {
+  item: HistoryItem;
+  onSelect: (s: string) => void;
+  onDelete: (id: string) => void;
+}) {
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -116,11 +135,19 @@ function HistoryRow({ item, onSelect, onDelete }: { item: HistoryItem; onSelect:
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           onSelect(item.sscc);
         }}
-        onPressIn={() => { scale.value = withSpring(0.97); }}
-        onPressOut={() => { scale.value = withSpring(1); }}
+        onPressIn={() => {
+          scale.value = withSpring(0.97);
+        }}
+        onPressOut={() => {
+          scale.value = withSpring(1);
+        }}
       >
         <View style={styles.historyLeft}>
-          <MaterialCommunityIcons name="barcode" size={20} color={palette.teal} />
+          <MaterialCommunityIcons
+            name="barcode"
+            size={20}
+            color={palette.teal}
+          />
           <View style={styles.historyTextContainer}>
             <Text style={styles.historySSCC}>(00) {item.sscc}</Text>
             <Text style={styles.historyDate}>
@@ -147,6 +174,50 @@ function HistoryRow({ item, onSelect, onDelete }: { item: HistoryItem; onSelect:
   );
 }
 
+function OCRResultItem({
+  sscc,
+  onGenerate,
+}: {
+  sscc: string;
+  onGenerate: (s: string) => void;
+}) {
+  const scale = useSharedValue(1);
+  const animStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+  }));
+
+  return (
+    <Animated.View style={animStyle}>
+      <Pressable
+        style={styles.ocrResultRow}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          onGenerate(sscc);
+        }}
+        onPressIn={() => {
+          scale.value = withSpring(0.97);
+        }}
+        onPressOut={() => {
+          scale.value = withSpring(1);
+        }}
+      >
+        <View style={styles.ocrResultLeft}>
+          <MaterialCommunityIcons
+            name="barcode"
+            size={22}
+            color={palette.teal}
+          />
+          <View>
+            <Text style={styles.ocrResultSSCC}>(00) {sscc}</Text>
+            <Text style={styles.ocrResultSub}>Tap to generate barcode</Text>
+          </View>
+        </View>
+        <Feather name="chevron-right" size={20} color={palette.textTertiary} />
+      </Pressable>
+    </Animated.View>
+  );
+}
+
 export default function MainScreen() {
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState("");
@@ -155,9 +226,17 @@ export default function MainScreen() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrResults, setOcrResults] = useState<string[]>([]);
+  const [ocrModalVisible, setOcrModalVisible] = useState(false);
 
-  const { isListening, transcript, isAvailable, startListening, stopListening } =
-    useSpeechRecognition();
+  const {
+    isListening,
+    transcript,
+    isAvailable,
+    startListening,
+    stopListening,
+  } = useSpeechRecognition();
 
   const micPulse = useSharedValue(1);
   const barcodeOpacity = useSharedValue(0);
@@ -176,7 +255,10 @@ export default function MainScreen() {
     if (isListening) {
       micPulse.value = withRepeat(
         withSequence(
-          withTiming(1.15, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+          withTiming(1.15, {
+            duration: 600,
+            easing: Easing.inOut(Easing.ease),
+          }),
           withTiming(1, { duration: 600, easing: Easing.inOut(Easing.ease) })
         ),
         -1,
@@ -211,12 +293,43 @@ export default function MainScreen() {
     } catch {}
   };
 
+  const generateBarcodeFromSSCC = useCallback(
+    (sscc: string, addToHistory = true) => {
+      const encoded = encodeSSCC(sscc);
+      setBarcode(encoded);
+      setCurrentSSCC(sscc);
+      setInput(sscc);
+      setError("");
+      barcodeOpacity.value = 0;
+      barcodeOpacity.value = withTiming(1, { duration: 400 });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      if (addToHistory) {
+        const newItem: HistoryItem = {
+          id:
+            Date.now().toString() +
+            Math.random().toString(36).substr(2, 9),
+          sscc,
+          createdAt: Date.now(),
+        };
+        setHistory((prev) => {
+          const updated = [newItem, ...prev].slice(0, 50);
+          saveHistory(updated);
+          return updated;
+        });
+      }
+    },
+    []
+  );
+
   const generateBarcode = useCallback(() => {
     const digits = input.replace(/\D/g, "");
     setError("");
 
     if (digits.length < 17 || digits.length > 18) {
-      setError("Enter 17 digits (check digit auto-calculated) or full 18 digits");
+      setError(
+        "Enter 17 digits (check digit auto-calculated) or full 18 digits"
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
@@ -226,41 +339,28 @@ export default function MainScreen() {
       const checkDigit = calculateSSCCCheckDigit(digits);
       sscc = digits + checkDigit.toString();
     } else {
-      const expectedCheck = calculateSSCCCheckDigit(digits.substring(0, 17));
+      const expectedCheck = calculateSSCCCheckDigit(
+        digits.substring(0, 17)
+      );
       if (parseInt(digits[17], 10) !== expectedCheck) {
-        setError(`Check digit invalid. Expected ${expectedCheck}, got ${digits[17]}`);
+        setError(
+          `Check digit invalid. Expected ${expectedCheck}, got ${digits[17]}`
+        );
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
       sscc = digits;
     }
 
-    const encoded = encodeSSCC(sscc);
-    setBarcode(encoded);
-    setCurrentSSCC(sscc);
-    barcodeOpacity.value = 0;
-    barcodeOpacity.value = withTiming(1, { duration: 400 });
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    generateBarcodeFromSSCC(sscc);
+  }, [input, generateBarcodeFromSSCC]);
 
-    const newItem: HistoryItem = {
-      id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-      sscc,
-      createdAt: Date.now(),
-    };
-    const updated = [newItem, ...history].slice(0, 50);
-    setHistory(updated);
-    saveHistory(updated);
-  }, [input, history]);
-
-  const selectFromHistory = useCallback((sscc: string) => {
-    const encoded = encodeSSCC(sscc);
-    setBarcode(encoded);
-    setCurrentSSCC(sscc);
-    setInput(sscc);
-    setError("");
-    barcodeOpacity.value = 0;
-    barcodeOpacity.value = withTiming(1, { duration: 400 });
-  }, []);
+  const selectFromHistory = useCallback(
+    (sscc: string) => {
+      generateBarcodeFromSSCC(sscc, false);
+    },
+    [generateBarcodeFromSSCC]
+  );
 
   const deleteFromHistory = useCallback(
     (id: string) => {
@@ -289,7 +389,10 @@ export default function MainScreen() {
       return;
     }
     if (!isAvailable) {
-      Alert.alert("Not Available", "Speech recognition is not supported in this browser.");
+      Alert.alert(
+        "Not Available",
+        "Speech recognition is not supported in this browser."
+      );
       return;
     }
     if (isListening) {
@@ -299,8 +402,137 @@ export default function MainScreen() {
     }
   };
 
-  const barcodeWidth = Math.min(SCREEN_WIDTH - 48, 360);
+  const handleCameraPress = async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+        base64: true,
+      });
 
+      if (result.canceled || !result.assets?.[0]?.base64) return;
+
+      setOcrLoading(true);
+      setError("");
+
+      const baseUrl = getApiUrl();
+      const url = new URL("/api/ocr", baseUrl);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: result.assets[0].base64 }),
+      });
+
+      if (!response.ok) {
+        throw new Error("OCR request failed");
+      }
+
+      const data = await response.json();
+      const ssccs: string[] = data.ssccs || [];
+
+      setOcrLoading(false);
+
+      if (ssccs.length === 0) {
+        Alert.alert(
+          "No SSCCs Found",
+          "No SSCC numbers were detected in the image. Try a clearer photo with visible barcode labels."
+        );
+      } else if (ssccs.length === 1) {
+        generateBarcodeFromSSCC(ssccs[0]);
+      } else {
+        setOcrResults(ssccs);
+        setOcrModalVisible(true);
+      }
+
+      Haptics.notificationAsync(
+        ssccs.length > 0
+          ? Haptics.NotificationFeedbackType.Success
+          : Haptics.NotificationFeedbackType.Warning
+      );
+    } catch (err) {
+      setOcrLoading(false);
+      setError("Failed to process image. Please try again.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Camera Permission",
+          "Camera access is needed to scan SSCC labels."
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (result.canceled || !result.assets?.[0]?.base64) return;
+
+      setOcrLoading(true);
+      setError("");
+
+      const baseUrl = getApiUrl();
+      const url = new URL("/api/ocr", baseUrl);
+
+      const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: result.assets[0].base64 }),
+      });
+
+      if (!response.ok) {
+        throw new Error("OCR request failed");
+      }
+
+      const data = await response.json();
+      const ssccs: string[] = data.ssccs || [];
+
+      setOcrLoading(false);
+
+      if (ssccs.length === 0) {
+        Alert.alert(
+          "No SSCCs Found",
+          "No SSCC numbers were detected. Try a clearer photo."
+        );
+      } else if (ssccs.length === 1) {
+        generateBarcodeFromSSCC(ssccs[0]);
+      } else {
+        setOcrResults(ssccs);
+        setOcrModalVisible(true);
+      }
+
+      Haptics.notificationAsync(
+        ssccs.length > 0
+          ? Haptics.NotificationFeedbackType.Success
+          : Haptics.NotificationFeedbackType.Warning
+      );
+    } catch (err) {
+      setOcrLoading(false);
+      setError("Failed to process image. Please try again.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  };
+
+  const handleOCRSelect = (sscc: string) => {
+    setOcrModalVisible(false);
+    generateBarcodeFromSSCC(sscc);
+  };
+
+  const generateAllOCR = () => {
+    setOcrModalVisible(false);
+    for (const sscc of ocrResults) {
+      generateBarcodeFromSSCC(sscc);
+    }
+  };
+
+  const barcodeWidth = Math.min(SCREEN_WIDTH - 48, 360);
   const webTopInset = Platform.OS === "web" ? 67 : 0;
   const webBottomInset = Platform.OS === "web" ? 34 : 0;
 
@@ -326,29 +558,71 @@ export default function MainScreen() {
           ListHeaderComponent={
             <View>
               <View style={styles.header}>
-                <MaterialCommunityIcons name="barcode-scan" size={28} color={palette.teal} />
+                <MaterialCommunityIcons
+                  name="barcode-scan"
+                  size={28}
+                  color={palette.teal}
+                />
                 <Text style={styles.title}>SSCC Barcode</Text>
               </View>
 
               <View style={styles.inputSection}>
-                <Animated.View style={micAnimStyle}>
+                <View style={styles.inputMethodRow}>
+                  <Animated.View style={micAnimStyle}>
+                    <Pressable
+                      style={[
+                        styles.micButton,
+                        isListening && styles.micButtonActive,
+                      ]}
+                      onPress={handleMicPress}
+                    >
+                      <Ionicons
+                        name={isListening ? "mic" : "mic-outline"}
+                        size={28}
+                        color={isListening ? palette.navy : palette.teal}
+                      />
+                    </Pressable>
+                  </Animated.View>
+
                   <Pressable
-                    style={[
-                      styles.micButton,
-                      isListening && styles.micButtonActive,
-                    ]}
-                    onPress={handleMicPress}
+                    style={styles.cameraButton}
+                    onPress={handleTakePhoto}
+                    disabled={ocrLoading}
                   >
-                    <Ionicons
-                      name={isListening ? "mic" : "mic-outline"}
-                      size={32}
-                      color={isListening ? palette.navy : palette.teal}
-                    />
+                    {ocrLoading ? (
+                      <ActivityIndicator size="small" color={palette.teal} />
+                    ) : (
+                      <Ionicons
+                        name="camera-outline"
+                        size={28}
+                        color={palette.teal}
+                      />
+                    )}
                   </Pressable>
-                </Animated.View>
+
+                  <Pressable
+                    style={styles.cameraButton}
+                    onPress={handleCameraPress}
+                    disabled={ocrLoading}
+                  >
+                    {ocrLoading ? (
+                      <ActivityIndicator size="small" color={palette.teal} />
+                    ) : (
+                      <Ionicons
+                        name="image-outline"
+                        size={28}
+                        color={palette.teal}
+                      />
+                    )}
+                  </Pressable>
+                </View>
 
                 <Text style={styles.inputLabel}>
-                  {isListening ? "Listening... speak the digits" : "Tap mic or type SSCC digits below"}
+                  {isListening
+                    ? "Listening... speak the digits"
+                    : ocrLoading
+                      ? "Analyzing image..."
+                      : "Voice  /  Camera  /  Gallery  /  Type"}
                 </Text>
 
                 <View style={styles.inputRow}>
@@ -378,7 +652,11 @@ export default function MainScreen() {
                       hitSlop={8}
                       style={styles.clearButton}
                     >
-                      <Feather name="x-circle" size={18} color={palette.textTertiary} />
+                      <Feather
+                        name="x-circle"
+                        size={18}
+                        color={palette.textTertiary}
+                      />
                     </Pressable>
                   )}
                 </View>
@@ -398,7 +676,11 @@ export default function MainScreen() {
 
                 {!!error && (
                   <View style={styles.errorContainer}>
-                    <Feather name="alert-circle" size={14} color={palette.red} />
+                    <Feather
+                      name="alert-circle"
+                      size={14}
+                      color={palette.red}
+                    />
                     <Text style={styles.errorText}>{error}</Text>
                   </View>
                 )}
@@ -412,25 +694,44 @@ export default function MainScreen() {
                   onPress={generateBarcode}
                   disabled={input.length < 17}
                 >
-                  <MaterialCommunityIcons name="barcode" size={20} color={palette.navy} />
-                  <Text style={styles.generateButtonText}>Generate Barcode</Text>
+                  <MaterialCommunityIcons
+                    name="barcode"
+                    size={20}
+                    color={palette.navy}
+                  />
+                  <Text style={styles.generateButtonText}>
+                    Generate Barcode
+                  </Text>
                 </Pressable>
               </View>
 
               {barcode && (
-                <Animated.View style={[styles.barcodeSection, barcodeAnimStyle]}>
+                <Animated.View
+                  style={[styles.barcodeSection, barcodeAnimStyle]}
+                >
                   <View style={styles.barcodeCard}>
                     <View style={styles.barcodeContainer}>
-                      <BarcodeView data={barcode} width={barcodeWidth} height={90} />
+                      <BarcodeView
+                        data={barcode}
+                        width={barcodeWidth}
+                        height={90}
+                      />
                     </View>
-                    <Text style={styles.humanReadable}>{barcode.humanReadable}</Text>
+                    <Text style={styles.humanReadable}>
+                      {barcode.humanReadable}
+                    </Text>
 
                     <View style={styles.barcodeActions}>
-                      <Pressable style={styles.actionButton} onPress={copyToClipboard}>
+                      <Pressable
+                        style={styles.actionButton}
+                        onPress={copyToClipboard}
+                      >
                         <Feather
                           name={copied ? "check" : "copy"}
                           size={16}
-                          color={copied ? palette.teal : palette.textSecondary}
+                          color={
+                            copied ? palette.teal : palette.textSecondary
+                          }
                         />
                         <Text
                           style={[
@@ -484,6 +785,66 @@ export default function MainScreen() {
           }
         />
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={ocrModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setOcrModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {ocrResults.length} SSCCs Found
+              </Text>
+              <Pressable
+                onPress={() => setOcrModalVisible(false)}
+                hitSlop={12}
+              >
+                <Feather name="x" size={24} color={palette.white} />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+            >
+              {ocrResults.map((sscc, idx) => (
+                <OCRResultItem
+                  key={idx}
+                  sscc={sscc}
+                  onGenerate={handleOCRSelect}
+                />
+              ))}
+            </ScrollView>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.generateAllButton,
+                pressed && styles.generateButtonPressed,
+              ]}
+              onPress={generateAllOCR}
+            >
+              <MaterialCommunityIcons
+                name="barcode"
+                size={20}
+                color={palette.navy}
+              />
+              <Text style={styles.generateButtonText}>Generate All</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {ocrLoading && (
+        <View style={styles.loadingOverlay}>
+          <View style={styles.loadingCard}>
+            <ActivityIndicator size="large" color={palette.teal} />
+            <Text style={styles.loadingText}>Scanning for SSCCs...</Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -515,10 +876,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 16,
   },
+  inputMethodRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+  },
   micButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: palette.tealGlow,
     borderWidth: 2,
     borderColor: palette.teal,
@@ -528,6 +894,16 @@ const styles = StyleSheet.create({
   micButtonActive: {
     backgroundColor: palette.teal,
     borderColor: palette.teal,
+  },
+  cameraButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: palette.tealGlow,
+    borderWidth: 2,
+    borderColor: palette.teal,
+    alignItems: "center",
+    justifyContent: "center",
   },
   inputLabel: {
     fontSize: 14,
@@ -729,5 +1105,93 @@ const styles = StyleSheet.create({
     color: palette.textTertiary,
     textAlign: "center",
     maxWidth: 240,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    justifyContent: "flex-end",
+  },
+  modalContainer: {
+    backgroundColor: palette.darkSlate,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "70%",
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_600SemiBold",
+    color: palette.white,
+  },
+  modalScroll: {
+    maxHeight: 300,
+  },
+  modalScrollContent: {
+    gap: 8,
+  },
+  ocrResultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: palette.cardBg,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  ocrResultLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  ocrResultSSCC: {
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    color: palette.white,
+    letterSpacing: 0.5,
+  },
+  ocrResultSub: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    color: palette.textTertiary,
+    marginTop: 2,
+  },
+  generateAllButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: palette.teal,
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginTop: 16,
+  },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(11, 20, 38, 0.85)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingCard: {
+    backgroundColor: palette.cardBg,
+    borderRadius: 16,
+    padding: 32,
+    alignItems: "center",
+    gap: 16,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  loadingText: {
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
+    color: palette.textSecondary,
   },
 });
