@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { View, StyleSheet, Platform } from "react-native";
+import { View, StyleSheet } from "react-native";
 import Svg, { Rect } from "react-native-svg";
 import { BarcodeData } from "@/lib/code128";
 

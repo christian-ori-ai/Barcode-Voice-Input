@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Modal,
   ScrollView,
+  Switch,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -38,11 +39,11 @@ import {
   calculateSSCCCheckDigit,
   BarcodeData,
 } from "@/lib/code128";
-import { getApiUrl } from "@/lib/query-client";
-import { fetch } from "expo/fetch";
+import { extractSSCCsOnDevice, OCRImageInput } from "@/lib/ocr";
 
 const { palette } = Colors;
 const HISTORY_KEY = "sscc_history";
+const MANUAL_ONLY_KEY = "manual_only_mode";
 const SSCC_PREFIX = "00";
 const SSCC_PREFIX_DISPLAY = `${SSCC_PREFIX} `;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
@@ -237,6 +238,7 @@ export default function MainScreen() {
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrResults, setOcrResults] = useState<string[]>([]);
   const [ocrModalVisible, setOcrModalVisible] = useState(false);
+  const [manualOnlyMode, setManualOnlyMode] = useState(false);
 
   const {
     isListening,
@@ -248,10 +250,6 @@ export default function MainScreen() {
 
   const micPulse = useSharedValue(1);
   const barcodeOpacity = useSharedValue(0);
-
-  useEffect(() => {
-    loadHistory();
-  }, []);
 
   useEffect(() => {
     if (transcript) {
@@ -276,7 +274,7 @@ export default function MainScreen() {
       cancelAnimation(micPulse);
       micPulse.value = withSpring(1);
     }
-  }, [isListening]);
+  }, [isListening, micPulse]);
 
   const micAnimStyle = useAnimatedStyle(() => ({
     transform: [{ scale: micPulse.value }],
@@ -286,19 +284,51 @@ export default function MainScreen() {
     opacity: barcodeOpacity.value,
   }));
 
-  const loadHistory = async () => {
-    try {
-      const data = await AsyncStorage.getItem(HISTORY_KEY);
-      if (data) {
-        setHistory(JSON.parse(data));
-      }
-    } catch {}
-  };
+  useEffect(() => {
+    const loadPersistedData = async () => {
+      try {
+        const [historyData, manualOnlyData] = await Promise.all([
+          AsyncStorage.getItem(HISTORY_KEY),
+          AsyncStorage.getItem(MANUAL_ONLY_KEY),
+        ]);
+
+        if (historyData) {
+          setHistory(JSON.parse(historyData));
+        }
+
+        if (manualOnlyData !== null) {
+          setManualOnlyMode(manualOnlyData === "true");
+        }
+      } catch {}
+    };
+
+    loadPersistedData();
+  }, []);
 
   const saveHistory = async (items: HistoryItem[]) => {
     try {
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(items));
     } catch {}
+  };
+
+  const saveManualOnlyMode = async (enabled: boolean) => {
+    try {
+      await AsyncStorage.setItem(MANUAL_ONLY_KEY, enabled ? "true" : "false");
+    } catch {}
+  };
+
+  const toggleManualOnlyMode = async (enabled: boolean) => {
+    setManualOnlyMode(enabled);
+    await saveManualOnlyMode(enabled);
+
+    if (enabled) {
+      if (isListening) {
+        stopListening();
+      }
+      setOcrModalVisible(false);
+      setOcrResults([]);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
   };
 
   const generateBarcodeFromSSCC = useCallback(
@@ -327,7 +357,7 @@ export default function MainScreen() {
         });
       }
     },
-    []
+    [barcodeOpacity]
   );
 
   const generateBarcode = useCallback(() => {
@@ -388,6 +418,14 @@ export default function MainScreen() {
   };
 
   const handleMicPress = () => {
+    if (manualOnlyMode) {
+      Alert.alert(
+        "Manual-Only Mode",
+        "Voice and OCR are disabled. Type the SSCC digits manually."
+      );
+      return;
+    }
+
     if (Platform.OS !== "web") {
       Alert.alert(
         "Voice Input",
@@ -410,26 +448,12 @@ export default function MainScreen() {
     }
   };
 
-  const processOCRImage = async (base64: string) => {
+  const processOCRImage = async (image: OCRImageInput) => {
     setOcrLoading(true);
     setError("");
 
     try {
-      const baseUrl = getApiUrl();
-      const url = new URL("/api/ocr", baseUrl);
-
-      const response = await fetch(url.toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: base64 }),
-      });
-
-      if (!response.ok) {
-        throw new Error("OCR request failed");
-      }
-
-      const data = await response.json();
-      const ssccs: string[] = data.ssccs || [];
+      const ssccs = await extractSSCCsOnDevice(image);
 
       setOcrLoading(false);
 
@@ -450,9 +474,9 @@ export default function MainScreen() {
           ? Haptics.NotificationFeedbackType.Success
           : Haptics.NotificationFeedbackType.Warning
       );
-    } catch (err) {
+    } catch {
       setOcrLoading(false);
-      setError("Failed to process image. Please try again.");
+      setError("On-device OCR failed. Try a clearer image or type manually.");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
@@ -485,6 +509,13 @@ export default function MainScreen() {
 
   const openImageForOCR = async (source: OCRImageSource) => {
     if (ocrLoading) return;
+    if (manualOnlyMode) {
+      Alert.alert(
+        "Manual-Only Mode",
+        "OCR is disabled. Turn off Manual-Only Mode to scan images."
+      );
+      return;
+    }
 
     try {
       const hasPermission = await requestImagePermission(source);
@@ -504,14 +535,17 @@ export default function MainScreen() {
 
       if (result.canceled) return;
 
-      const base64 = result.assets?.[0]?.base64;
-      if (!base64) {
+      const imageAsset = result.assets?.[0];
+      if (!imageAsset?.uri && !imageAsset?.base64) {
         setError("Could not read that image. Please try another one.");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
 
-      await processOCRImage(base64);
+      await processOCRImage({
+        uri: imageAsset?.uri,
+        base64: imageAsset?.base64 ?? undefined,
+      });
     } catch {
       setOcrLoading(false);
       setError(
@@ -584,8 +618,10 @@ export default function MainScreen() {
                       style={[
                         styles.micButton,
                         isListening && styles.micButtonActive,
+                        manualOnlyMode && styles.inputMethodButtonDisabled,
                       ]}
                       onPress={handleMicPress}
+                      disabled={manualOnlyMode}
                     >
                       <Ionicons
                         name={isListening ? "mic" : "mic-outline"}
@@ -596,9 +632,12 @@ export default function MainScreen() {
                   </Animated.View>
 
                   <Pressable
-                    style={styles.cameraButton}
+                    style={[
+                      styles.cameraButton,
+                      manualOnlyMode && styles.inputMethodButtonDisabled,
+                    ]}
                     onPress={handleOpenCamera}
-                    disabled={ocrLoading}
+                    disabled={ocrLoading || manualOnlyMode}
                   >
                     {ocrLoading ? (
                       <ActivityIndicator size="small" color={palette.teal} />
@@ -612,9 +651,12 @@ export default function MainScreen() {
                   </Pressable>
 
                   <Pressable
-                    style={styles.cameraButton}
+                    style={[
+                      styles.cameraButton,
+                      manualOnlyMode && styles.inputMethodButtonDisabled,
+                    ]}
                     onPress={handleOpenGallery}
-                    disabled={ocrLoading}
+                    disabled={ocrLoading || manualOnlyMode}
                   >
                     {ocrLoading ? (
                       <ActivityIndicator size="small" color={palette.teal} />
@@ -628,9 +670,27 @@ export default function MainScreen() {
                   </Pressable>
                 </View>
 
+                <View style={styles.modeToggleRow}>
+                  <Text style={styles.modeToggleText}>
+                    Manual-Only Mode (Offline)
+                  </Text>
+                  <Switch
+                    value={manualOnlyMode}
+                    onValueChange={toggleManualOnlyMode}
+                    trackColor={{
+                      false: palette.border,
+                      true: palette.teal,
+                    }}
+                    thumbColor={manualOnlyMode ? palette.navy : palette.white}
+                    ios_backgroundColor={palette.border}
+                  />
+                </View>
+
                 <Text style={styles.inputLabel}>
-                  {isListening
-                    ? "Listening... speak the digits"
+                  {manualOnlyMode
+                    ? "Manual-Only Mode is on. Type SSCC digits directly."
+                    : isListening
+                      ? "Listening... speak the digits"
                     : ocrLoading
                       ? "Analyzing image..."
                       : "Voice  /  Camera  /  Gallery  /  Type"}
@@ -852,7 +912,7 @@ export default function MainScreen() {
         <View style={styles.loadingOverlay}>
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color={palette.teal} />
-            <Text style={styles.loadingText}>Scanning for SSCCs...</Text>
+            <Text style={styles.loadingText}>Running on-device OCR...</Text>
           </View>
         </View>
       )}
@@ -892,6 +952,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 16,
   },
+  inputMethodButtonDisabled: {
+    opacity: 0.35,
+  },
   micButton: {
     width: 64,
     height: 64,
@@ -915,6 +978,18 @@ const styles = StyleSheet.create({
     borderColor: palette.teal,
     alignItems: "center",
     justifyContent: "center",
+  },
+  modeToggleRow: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+  },
+  modeToggleText: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    color: palette.textSecondary,
   },
   inputLabel: {
     fontSize: 14,
