@@ -43,12 +43,20 @@ import { fetch } from "expo/fetch";
 
 const { palette } = Colors;
 const HISTORY_KEY = "sscc_history";
+const SSCC_PREFIX = "00";
+const SSCC_PREFIX_DISPLAY = `${SSCC_PREFIX} `;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 interface HistoryItem {
   id: string;
   sscc: string;
   createdAt: number;
+}
+
+type OCRImageSource = "camera" | "gallery";
+
+function formatSSCCDisplay(sscc: string): string {
+  return `${SSCC_PREFIX_DISPLAY}${sscc}`;
 }
 
 function useSpeechRecognition() {
@@ -149,7 +157,7 @@ function HistoryRow({
             color={palette.teal}
           />
           <View style={styles.historyTextContainer}>
-            <Text style={styles.historySSCC}>00 {item.sscc}</Text>
+            <Text style={styles.historySSCC}>{formatSSCCDisplay(item.sscc)}</Text>
             <Text style={styles.historyDate}>
               {new Date(item.createdAt).toLocaleDateString(undefined, {
                 month: "short",
@@ -208,7 +216,7 @@ function OCRResultItem({
             color={palette.teal}
           />
           <View>
-            <Text style={styles.ocrResultSSCC}>00 {sscc}</Text>
+            <Text style={styles.ocrResultSSCC}>{formatSSCCDisplay(sscc)}</Text>
             <Text style={styles.ocrResultSub}>Tap to generate barcode</Text>
           </View>
         </View>
@@ -373,7 +381,7 @@ export default function MainScreen() {
 
   const copyToClipboard = async () => {
     if (!currentSSCC) return;
-    await Clipboard.setStringAsync("00" + currentSSCC);
+    await Clipboard.setStringAsync(formatSSCCDisplay(currentSSCC));
     setCopied(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setTimeout(() => setCopied(false), 2000);
@@ -399,23 +407,6 @@ export default function MainScreen() {
       stopListening();
     } else {
       startListening();
-    }
-  };
-
-  const handleCameraPress = async () => {
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.8,
-        base64: true,
-      });
-
-      if (result.canceled || !result.assets?.[0]?.base64) return;
-      await processOCRImage(result.assets[0].base64);
-    } catch (err) {
-      setOcrLoading(false);
-      setError("Failed to open gallery. Please try again.");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
 
@@ -466,40 +457,78 @@ export default function MainScreen() {
     }
   };
 
-  const handleTakePhoto = async () => {
-    try {
-      if (Platform.OS === "web") {
-        const result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.8,
-          base64: true,
-        });
-        if (result.canceled || !result.assets?.[0]?.base64) return;
-        await processOCRImage(result.assets[0].base64);
-        return;
-      }
+  const requestImagePermission = async (source: OCRImageSource) => {
+    if (Platform.OS === "web") return true;
 
+    if (source === "camera") {
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== "granted") {
         Alert.alert(
           "Camera Permission",
           "Camera access is needed to scan SSCC labels."
         );
+        return false;
+      }
+      return true;
+    }
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Photo Library Permission",
+        "Photo library access is needed to choose label images."
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const openImageForOCR = async (source: OCRImageSource) => {
+    if (ocrLoading) return;
+
+    try {
+      const hasPermission = await requestImagePermission(source);
+      if (!hasPermission) return;
+
+      const result =
+        source === "camera" && Platform.OS !== "web"
+          ? await ImagePicker.launchCameraAsync({
+              quality: 0.8,
+              base64: true,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ImagePicker.MediaTypeOptions.Images,
+              quality: 0.8,
+              base64: true,
+            });
+
+      if (result.canceled) return;
+
+      const base64 = result.assets?.[0]?.base64;
+      if (!base64) {
+        setError("Could not read that image. Please try another one.");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
 
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.8,
-        base64: true,
-      });
-
-      if (result.canceled || !result.assets?.[0]?.base64) return;
-      await processOCRImage(result.assets[0].base64);
-    } catch (err) {
+      await processOCRImage(base64);
+    } catch {
       setOcrLoading(false);
-      setError("Camera not available. Use the gallery button instead.");
+      setError(
+        source === "camera"
+          ? "Camera not available. Use the gallery button instead."
+          : "Failed to open gallery. Please try again."
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
+  };
+
+  const handleOpenCamera = async () => {
+    await openImageForOCR("camera");
+  };
+
+  const handleOpenGallery = async () => {
+    await openImageForOCR("gallery");
   };
 
   const handleOCRSelect = (sscc: string) => {
@@ -568,7 +597,7 @@ export default function MainScreen() {
 
                   <Pressable
                     style={styles.cameraButton}
-                    onPress={handleTakePhoto}
+                    onPress={handleOpenCamera}
                     disabled={ocrLoading}
                   >
                     {ocrLoading ? (
@@ -584,7 +613,7 @@ export default function MainScreen() {
 
                   <Pressable
                     style={styles.cameraButton}
-                    onPress={handleCameraPress}
+                    onPress={handleOpenGallery}
                     disabled={ocrLoading}
                   >
                     {ocrLoading ? (
@@ -609,7 +638,7 @@ export default function MainScreen() {
 
                 <View style={styles.inputRow}>
                   <View style={styles.prefixBadge}>
-                    <Text style={styles.prefixText}>00</Text>
+                    <Text style={styles.prefixText}>{SSCC_PREFIX}</Text>
                   </View>
                   <TextInput
                     style={styles.textInput}
