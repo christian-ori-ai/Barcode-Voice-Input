@@ -455,8 +455,6 @@ export default function MainScreen() {
     try {
       const ssccs = await extractSSCCsOnDevice(image);
 
-      setOcrLoading(false);
-
       if (ssccs.length === 0) {
         Alert.alert(
           "No SSCCs Found",
@@ -474,10 +472,13 @@ export default function MainScreen() {
           ? Haptics.NotificationFeedbackType.Success
           : Haptics.NotificationFeedbackType.Warning
       );
-    } catch {
-      setOcrLoading(false);
-      setError("On-device OCR failed. Try a clearer image or type manually.");
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : "Unknown OCR error.";
+      setError(`On-device OCR failed. ${detail}`);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } finally {
+      setOcrLoading(false);
     }
   };
 

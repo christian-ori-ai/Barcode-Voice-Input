@@ -19,10 +19,16 @@ export async function extractSSCCsOnDevice(
       ? await getTextFromFrame(uri)
       : await getTextFromFrame(base64 as string, true);
 
-    return extractSSCCsFromText(lines.join(" "));
-  } catch {
+    const text = Array.isArray(lines) ? lines.join("\n") : "";
+    return extractSSCCsFromText(text);
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? ` ${error.message}`
+        : "";
+
     throw new Error(
-      "On-device OCR is unavailable in this build. Enable manual-only mode to work fully offline."
+      `On-device OCR is unavailable in this build.${message} Enable manual-only mode to work fully offline.`
     );
   }
 }

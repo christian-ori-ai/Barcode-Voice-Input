@@ -1,4 +1,8 @@
 import OpenAI from "openai";
+import {
+  extractSSCCsFromText,
+  normalizeAndValidateSSCCs,
+} from "../lib/ocr-utils";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -34,17 +38,24 @@ export async function extractSSCCsFromImage(base64Image: string): Promise<string
   });
 
   const content = response.choices[0]?.message?.content || "[]";
+  const modelCandidates: string[] = [];
 
   try {
     const match = content.match(/\[[\s\S]*\]/);
-    if (!match) return [];
-    const parsed = JSON.parse(match[0]);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item: unknown) => typeof item === "string" && /^\d{18}$/.test(item)
-    );
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (typeof item === "string" || typeof item === "number") {
+            modelCandidates.push(String(item));
+          }
+        }
+      }
+    }
   } catch {
-    const digitMatches = content.match(/\d{18}/g);
-    return digitMatches || [];
+    // Fall through to text-based extraction below.
   }
+
+  const textCandidates = extractSSCCsFromText(content);
+  return normalizeAndValidateSSCCs([...modelCandidates, ...textCandidates]);
 }
