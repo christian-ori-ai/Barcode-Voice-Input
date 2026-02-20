@@ -12,7 +12,7 @@ export async function extractSSCCsFromImage(base64Image: string): Promise<string
       {
         role: "system",
         content:
-          "You are an OCR specialist that extracts SSCC (Serial Shipping Container Code) numbers from images. SSCCs are 18-digit numbers, often prefixed with (00) or AI 00. Extract ONLY the numeric digits of each SSCC found. Return them as a JSON array of strings, each string being exactly 18 digits. If you see partial numbers or non-SSCC numbers, ignore them. If no SSCCs are found, return an empty array. Respond ONLY with the JSON array, no other text.",
+          "You are an OCR specialist that extracts SSCC (Serial Shipping Container Code) numbers from images. SSCCs are 18-digit numeric strings. They may appear as standalone 18-digit numbers, or as 19-20 digit numbers where the first 1-2 digits are a leading extension digit followed by the 18-digit SSCC. They may also be prefixed with 00 or (00). Look for any long numeric strings (18-20 digits) in the image. For each one found: if it is exactly 18 digits, return it as-is. If it is 19 or 20 digits, return only the LAST 18 digits (strip leading digits). Ignore numbers shorter than 18 digits. Return a JSON array of 18-digit strings. If no qualifying numbers are found, return an empty array. Respond ONLY with the JSON array, no other text.",
       },
       {
         role: "user",

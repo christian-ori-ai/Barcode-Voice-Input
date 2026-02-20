@@ -149,7 +149,7 @@ function HistoryRow({
             color={palette.teal}
           />
           <View style={styles.historyTextContainer}>
-            <Text style={styles.historySSCC}>(00) {item.sscc}</Text>
+            <Text style={styles.historySSCC}>00 {item.sscc}</Text>
             <Text style={styles.historyDate}>
               {new Date(item.createdAt).toLocaleDateString(undefined, {
                 month: "short",
@@ -208,7 +208,7 @@ function OCRResultItem({
             color={palette.teal}
           />
           <View>
-            <Text style={styles.ocrResultSSCC}>(00) {sscc}</Text>
+            <Text style={styles.ocrResultSSCC}>00 {sscc}</Text>
             <Text style={styles.ocrResultSub}>Tap to generate barcode</Text>
           </View>
         </View>
@@ -373,7 +373,7 @@ export default function MainScreen() {
 
   const copyToClipboard = async () => {
     if (!currentSSCC) return;
-    await Clipboard.setStringAsync("(00)" + currentSSCC);
+    await Clipboard.setStringAsync("00" + currentSSCC);
     setCopied(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setTimeout(() => setCopied(false), 2000);
@@ -411,17 +411,26 @@ export default function MainScreen() {
       });
 
       if (result.canceled || !result.assets?.[0]?.base64) return;
+      await processOCRImage(result.assets[0].base64);
+    } catch (err) {
+      setOcrLoading(false);
+      setError("Failed to open gallery. Please try again.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  };
 
-      setOcrLoading(true);
-      setError("");
+  const processOCRImage = async (base64: string) => {
+    setOcrLoading(true);
+    setError("");
 
+    try {
       const baseUrl = getApiUrl();
       const url = new URL("/api/ocr", baseUrl);
 
       const response = await fetch(url.toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: result.assets[0].base64 }),
+        body: JSON.stringify({ image: base64 }),
       });
 
       if (!response.ok) {
@@ -436,7 +445,7 @@ export default function MainScreen() {
       if (ssccs.length === 0) {
         Alert.alert(
           "No SSCCs Found",
-          "No SSCC numbers were detected in the image. Try a clearer photo with visible barcode labels."
+          "No SSCC numbers were detected. Try a clearer photo with visible numbers."
         );
       } else if (ssccs.length === 1) {
         generateBarcodeFromSSCC(ssccs[0]);
@@ -459,6 +468,17 @@ export default function MainScreen() {
 
   const handleTakePhoto = async () => {
     try {
+      if (Platform.OS === "web") {
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          quality: 0.8,
+          base64: true,
+        });
+        if (result.canceled || !result.assets?.[0]?.base64) return;
+        await processOCRImage(result.assets[0].base64);
+        return;
+      }
+
       const { status } = await ImagePicker.requestCameraPermissionsAsync();
       if (status !== "granted") {
         Alert.alert(
@@ -474,48 +494,10 @@ export default function MainScreen() {
       });
 
       if (result.canceled || !result.assets?.[0]?.base64) return;
-
-      setOcrLoading(true);
-      setError("");
-
-      const baseUrl = getApiUrl();
-      const url = new URL("/api/ocr", baseUrl);
-
-      const response = await fetch(url.toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: result.assets[0].base64 }),
-      });
-
-      if (!response.ok) {
-        throw new Error("OCR request failed");
-      }
-
-      const data = await response.json();
-      const ssccs: string[] = data.ssccs || [];
-
-      setOcrLoading(false);
-
-      if (ssccs.length === 0) {
-        Alert.alert(
-          "No SSCCs Found",
-          "No SSCC numbers were detected. Try a clearer photo."
-        );
-      } else if (ssccs.length === 1) {
-        generateBarcodeFromSSCC(ssccs[0]);
-      } else {
-        setOcrResults(ssccs);
-        setOcrModalVisible(true);
-      }
-
-      Haptics.notificationAsync(
-        ssccs.length > 0
-          ? Haptics.NotificationFeedbackType.Success
-          : Haptics.NotificationFeedbackType.Warning
-      );
+      await processOCRImage(result.assets[0].base64);
     } catch (err) {
       setOcrLoading(false);
-      setError("Failed to process image. Please try again.");
+      setError("Camera not available. Use the gallery button instead.");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
@@ -627,7 +609,7 @@ export default function MainScreen() {
 
                 <View style={styles.inputRow}>
                   <View style={styles.prefixBadge}>
-                    <Text style={styles.prefixText}>(00)</Text>
+                    <Text style={styles.prefixText}>00</Text>
                   </View>
                   <TextInput
                     style={styles.textInput}
