@@ -14,6 +14,8 @@ import {
   Modal,
   ScrollView,
   Switch,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -250,6 +252,7 @@ export default function MainScreen() {
   const [manualOnlyMode, setManualOnlyMode] = useState(false);
   const [omitLeadingPrefix, setOmitLeadingPrefix] = useState(false);
   const [privacyMode, setPrivacyMode] = useState(false);
+  const [activeBarcodeIndex, setActiveBarcodeIndex] = useState(0);
 
   const {
     isListening,
@@ -429,11 +432,12 @@ export default function MainScreen() {
       setRenderedSSCCs((prev) => {
         if (mode === "append") {
           const remaining = prev.filter((existing) => !uniqueSSCCs.includes(existing));
-          return [...uniqueSSCCs, ...remaining];
+          return [...uniqueSSCCs, ...remaining].slice(0, 20);
         }
         return uniqueSSCCs;
       });
 
+      setActiveBarcodeIndex(0);
       setInput(uniqueSSCCs[0]);
       setError("");
       barcodeOpacity.value = 0;
@@ -497,7 +501,7 @@ export default function MainScreen() {
       sscc = digits;
     }
 
-    generateBarcodeFromSSCC(sscc);
+    generateBarcodeFromSSCC(sscc, true, "append");
   }, [input, generateBarcodeFromSSCC]);
 
   const selectFromHistory = useCallback(
@@ -581,7 +585,7 @@ export default function MainScreen() {
           "No SSCC numbers were detected. Try a clearer photo with visible numbers."
         );
       } else if (ssccs.length === 1) {
-        generateBarcodeFromSSCC(ssccs[0]);
+        generateBarcodeFromSSCC(ssccs[0], true, "append");
       } else {
         setOcrResults(ssccs);
         setOcrModalVisible(true);
@@ -696,9 +700,19 @@ export default function MainScreen() {
   };
 
   const barcodeWidth = Math.min(SCREEN_WIDTH - 48, 360);
+  const barcodePageWidth = SCREEN_WIDTH - 40;
   const webTopInset = Platform.OS === "web" ? 67 : 0;
   const webBottomInset = Platform.OS === "web" ? 34 : 0;
   const historyItems = privacyMode ? [] : history;
+
+  const handleBarcodeSwipeEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const nextIndex = Math.round(
+      event.nativeEvent.contentOffset.x / barcodePageWidth
+    );
+    setActiveBarcodeIndex(
+      Math.max(0, Math.min(nextIndex, renderedBarcodes.length - 1))
+    );
+  };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + webTopInset }]}>
@@ -933,51 +947,81 @@ export default function MainScreen() {
                 <Animated.View
                   style={[styles.barcodeSection, barcodeAnimStyle]}
                 >
-                  {renderedBarcodes.map(({ sscc, data }, idx) => (
-                    <View
-                      key={sscc}
-                      style={[
-                        styles.barcodeCard,
-                        idx > 0 && styles.barcodeCardSpacer,
-                      ]}
-                    >
-                      <View style={styles.barcodeContainer}>
-                        <BarcodeView
-                          data={data}
-                          width={barcodeWidth}
-                          height={90}
-                        />
-                      </View>
-                      <Text style={styles.humanReadable}>
-                        {data.humanReadable}
-                      </Text>
-
-                      <View style={styles.barcodeActions}>
-                        <Pressable
-                          style={styles.actionButton}
-                          onPress={() => copyToClipboard(sscc)}
-                        >
-                          <Feather
-                            name={copiedSSCC === sscc ? "check" : "copy"}
-                            size={16}
-                            color={
-                              copiedSSCC === sscc
-                                ? palette.teal
-                                : palette.textSecondary
-                            }
-                          />
-                          <Text
-                            style={[
-                              styles.actionText,
-                              copiedSSCC === sscc && { color: palette.teal },
-                            ]}
-                          >
-                            {copiedSSCC === sscc ? "Copied" : "Copy"}
+                  <ScrollView
+                    key={renderedBarcodes[0]?.sscc ?? "barcode-carousel"}
+                    horizontal
+                    pagingEnabled
+                    decelerationRate="fast"
+                    showsHorizontalScrollIndicator={false}
+                    snapToInterval={barcodePageWidth}
+                    snapToAlignment="center"
+                    onMomentumScrollEnd={handleBarcodeSwipeEnd}
+                    contentContainerStyle={styles.barcodeCarouselContent}
+                  >
+                    {renderedBarcodes.map(({ sscc, data }) => (
+                      <View
+                        key={sscc}
+                        style={[styles.barcodePage, { width: barcodePageWidth }]}
+                      >
+                        <View style={styles.barcodeCard}>
+                          <View style={styles.barcodeContainer}>
+                            <BarcodeView
+                              data={data}
+                              width={barcodeWidth}
+                              height={90}
+                            />
+                          </View>
+                          <Text style={styles.humanReadable}>
+                            {data.humanReadable}
                           </Text>
-                        </Pressable>
+
+                          <View style={styles.barcodeActions}>
+                            <Pressable
+                              style={styles.actionButton}
+                              onPress={() => copyToClipboard(sscc)}
+                            >
+                              <Feather
+                                name={copiedSSCC === sscc ? "check" : "copy"}
+                                size={16}
+                                color={
+                                  copiedSSCC === sscc
+                                    ? palette.teal
+                                    : palette.textSecondary
+                                }
+                              />
+                              <Text
+                                style={[
+                                  styles.actionText,
+                                  copiedSSCC === sscc && { color: palette.teal },
+                                ]}
+                              >
+                                {copiedSSCC === sscc ? "Copied" : "Copy"}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </View>
                       </View>
-                    </View>
-                  ))}
+                    ))}
+                  </ScrollView>
+                  {renderedBarcodes.length > 1 && (
+                    <>
+                      <Text style={styles.carouselHint}>
+                        Swipe left or right for more barcodes
+                      </Text>
+                      <View style={styles.carouselDots}>
+                        {renderedBarcodes.map((_, idx) => (
+                          <View
+                            key={idx}
+                            style={[
+                              styles.carouselDot,
+                              idx === activeBarcodeIndex &&
+                                styles.carouselDotActive,
+                            ]}
+                          />
+                        ))}
+                      </View>
+                    </>
+                  )}
                 </Animated.View>
               )}
 
@@ -1254,6 +1298,12 @@ const styles = StyleSheet.create({
     marginTop: 24,
     width: "100%",
   },
+  barcodeCarouselContent: {
+    alignItems: "stretch",
+  },
+  barcodePage: {
+    alignItems: "center",
+  },
   barcodeCard: {
     backgroundColor: palette.cardBg,
     borderRadius: 16,
@@ -1261,9 +1311,31 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: palette.border,
+    width: "100%",
   },
-  barcodeCardSpacer: {
-    marginTop: 12,
+  carouselHint: {
+    marginTop: 10,
+    textAlign: "center",
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: palette.textTertiary,
+  },
+  carouselDots: {
+    marginTop: 8,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+  },
+  carouselDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: palette.border,
+  },
+  carouselDotActive: {
+    backgroundColor: palette.teal,
+    width: 16,
   },
   barcodeContainer: {
     backgroundColor: "#FFFFFF",
