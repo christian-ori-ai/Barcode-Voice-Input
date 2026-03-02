@@ -45,7 +45,6 @@ const { palette } = Colors;
 const HISTORY_KEY = "sscc_history";
 const MANUAL_ONLY_KEY = "manual_only_mode";
 const SSCC_PREFIX = "00";
-const SSCC_PREFIX_DISPLAY = `${SSCC_PREFIX} `;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 interface HistoryItem {
@@ -57,7 +56,7 @@ interface HistoryItem {
 type OCRImageSource = "camera" | "gallery";
 
 function formatSSCCDisplay(sscc: string): string {
-  return `${SSCC_PREFIX_DISPLAY}${sscc}`;
+  return `${SSCC_PREFIX}${sscc}`;
 }
 
 function useSpeechRecognition() {

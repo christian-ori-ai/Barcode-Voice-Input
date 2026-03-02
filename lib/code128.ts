@@ -72,7 +72,7 @@ export function encodeSSCC(ssccDigits: string): BarcodeData {
     allBars.push(...patternToBars(PATTERNS[val]));
   }
 
-  const humanReadable = "00 " + ssccDigits;
+  const humanReadable = "00" + ssccDigits;
 
   return { bars: allBars, humanReadable };
 }
