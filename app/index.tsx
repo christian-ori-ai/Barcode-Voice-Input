@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   StyleSheet,
   Text,
@@ -37,7 +37,6 @@ import BarcodeView from "@/components/BarcodeView";
 import {
   encodeSSCC,
   calculateSSCCCheckDigit,
-  BarcodeData,
 } from "@/lib/code128";
 import { extractSSCCsOnDevice, OCRImageInput } from "@/lib/ocr";
 
@@ -55,6 +54,7 @@ interface HistoryItem {
 }
 
 type OCRImageSource = "camera" | "gallery";
+type RenderMode = "replace" | "append";
 
 function formatSSCCDisplay(sscc: string, includePrefix = true): string {
   return includePrefix ? `${SSCC_PREFIX}${sscc}` : sscc;
@@ -226,7 +226,7 @@ function OCRResultItem({
             <Text style={styles.ocrResultSSCC}>
               {formatSSCCDisplay(sscc, includePrefix)}
             </Text>
-            <Text style={styles.ocrResultSub}>Tap to generate barcode</Text>
+            <Text style={styles.ocrResultSub}>Tap to add barcode</Text>
           </View>
         </View>
         <Feather name="chevron-right" size={20} color={palette.textTertiary} />
@@ -238,11 +238,10 @@ function OCRResultItem({
 export default function MainScreen() {
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState("");
-  const [barcode, setBarcode] = useState<BarcodeData | null>(null);
-  const [currentSSCC, setCurrentSSCC] = useState("");
+  const [renderedSSCCs, setRenderedSSCCs] = useState<string[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copiedSSCC, setCopiedSSCC] = useState<string | null>(null);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrResults, setOcrResults] = useState<string[]>([]);
   const [ocrModalVisible, setOcrModalVisible] = useState(false);
@@ -293,6 +292,17 @@ export default function MainScreen() {
     opacity: barcodeOpacity.value,
   }));
 
+  const renderedBarcodes = useMemo(
+    () =>
+      renderedSSCCs.map((sscc) => ({
+        sscc,
+        data: encodeSSCC(sscc, {
+          includeApplicationIdentifier: !omitLeadingPrefix,
+        }),
+      })),
+    [renderedSSCCs, omitLeadingPrefix]
+  );
+
   useEffect(() => {
     const loadPersistedData = async () => {
       try {
@@ -319,11 +329,11 @@ export default function MainScreen() {
     loadPersistedData();
   }, []);
 
-  const saveHistory = async (items: HistoryItem[]) => {
+  const saveHistory = useCallback(async (items: HistoryItem[]) => {
     try {
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(items));
     } catch {}
-  };
+  }, []);
 
   const saveManualOnlyMode = async (enabled: boolean) => {
     try {
@@ -357,46 +367,72 @@ export default function MainScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const generateBarcodeFromSSCC = useCallback(
-    (sscc: string, addToHistory = true) => {
-      const encoded = encodeSSCC(sscc, {
-        includeApplicationIdentifier: !omitLeadingPrefix,
+  const addSSCCsToHistory = useCallback(
+    (ssccs: string[]) => {
+      const uniqueSSCCs = Array.from(new Set(ssccs));
+      if (uniqueSSCCs.length === 0) return;
+
+      const timestamp = Date.now();
+      const newItems: HistoryItem[] = uniqueSSCCs.map((sscc, idx) => ({
+        id: `${timestamp}-${idx}-${Math.random().toString(36).slice(2, 9)}`,
+        sscc,
+        createdAt: timestamp - idx,
+      }));
+
+      setHistory((prev) => {
+        const updated = [...newItems, ...prev].slice(0, 50);
+        saveHistory(updated);
+        return updated;
       });
-      setBarcode(encoded);
-      setCurrentSSCC(sscc);
-      setInput(sscc);
+    },
+    [saveHistory]
+  );
+
+  const renderSSCCBarcodes = useCallback(
+    (ssccs: string[], mode: RenderMode = "replace") => {
+      const uniqueSSCCs = Array.from(new Set(ssccs));
+      if (uniqueSSCCs.length === 0) return;
+
+      setRenderedSSCCs((prev) => {
+        if (mode === "append") {
+          const remaining = prev.filter((existing) => !uniqueSSCCs.includes(existing));
+          return [...uniqueSSCCs, ...remaining];
+        }
+        return uniqueSSCCs;
+      });
+
+      setInput(uniqueSSCCs[0]);
       setError("");
       barcodeOpacity.value = 0;
       barcodeOpacity.value = withTiming(1, { duration: 400 });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-      if (addToHistory) {
-        const newItem: HistoryItem = {
-          id:
-            Date.now().toString() +
-            Math.random().toString(36).substr(2, 9),
-          sscc,
-          createdAt: Date.now(),
-        };
-        setHistory((prev) => {
-          const updated = [newItem, ...prev].slice(0, 50);
-          saveHistory(updated);
-          return updated;
-        });
-      }
     },
-    [barcodeOpacity, omitLeadingPrefix]
+    [barcodeOpacity]
   );
 
-  useEffect(() => {
-    if (!currentSSCC) return;
+  const generateBarcodeFromSSCC = useCallback(
+    (sscc: string, addToHistory = true, mode: RenderMode = "replace") => {
+      renderSSCCBarcodes([sscc], mode);
+      if (addToHistory) {
+        addSSCCsToHistory([sscc]);
+      }
+    },
+    [addSSCCsToHistory, renderSSCCBarcodes]
+  );
 
-    setBarcode(
-      encodeSSCC(currentSSCC, {
-        includeApplicationIdentifier: !omitLeadingPrefix,
-      })
-    );
-  }, [currentSSCC, omitLeadingPrefix]);
+  const generateBarcodesFromSSCCs = useCallback(
+    (ssccs: string[], addToHistory = true, mode: RenderMode = "replace") => {
+      const uniqueSSCCs = Array.from(new Set(ssccs));
+      if (uniqueSSCCs.length === 0) return;
+
+      renderSSCCBarcodes(uniqueSSCCs, mode);
+
+      if (addToHistory) {
+        addSSCCsToHistory(uniqueSSCCs);
+      }
+    },
+    [addSSCCsToHistory, renderSSCCBarcodes]
+  );
 
   const generateBarcode = useCallback(() => {
     const digits = input.replace(/\D/g, "");
@@ -440,21 +476,24 @@ export default function MainScreen() {
 
   const deleteFromHistory = useCallback(
     (id: string) => {
-      const updated = history.filter((h) => h.id !== id);
-      setHistory(updated);
-      saveHistory(updated);
+      setHistory((prev) => {
+        const updated = prev.filter((h) => h.id !== id);
+        saveHistory(updated);
+        return updated;
+      });
     },
-    [history]
+    [saveHistory]
   );
 
-  const copyToClipboard = async () => {
-    if (!currentSSCC) return;
+  const copyToClipboard = async (sscc: string) => {
     await Clipboard.setStringAsync(
-      formatSSCCDisplay(currentSSCC, !omitLeadingPrefix)
+      formatSSCCDisplay(sscc, !omitLeadingPrefix)
     );
-    setCopied(true);
+    setCopiedSSCC(sscc);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setTimeout(() => setCopied(false), 2000);
+    setTimeout(() => {
+      setCopiedSSCC((current) => (current === sscc ? null : current));
+    }, 2000);
   };
 
   const handleMicPress = () => {
@@ -607,15 +646,12 @@ export default function MainScreen() {
   };
 
   const handleOCRSelect = (sscc: string) => {
-    setOcrModalVisible(false);
-    generateBarcodeFromSSCC(sscc);
+    generateBarcodeFromSSCC(sscc, true, "append");
   };
 
   const generateAllOCR = () => {
     setOcrModalVisible(false);
-    for (const sscc of ocrResults) {
-      generateBarcodeFromSSCC(sscc);
-    }
+    generateBarcodesFromSSCCs(ocrResults);
   };
 
   const barcodeWidth = Math.min(SCREEN_WIDTH - 48, 360);
@@ -833,45 +869,55 @@ export default function MainScreen() {
                 </Pressable>
               </View>
 
-              {barcode && (
+              {renderedBarcodes.length > 0 && (
                 <Animated.View
                   style={[styles.barcodeSection, barcodeAnimStyle]}
                 >
-                  <View style={styles.barcodeCard}>
-                    <View style={styles.barcodeContainer}>
-                      <BarcodeView
-                        data={barcode}
-                        width={barcodeWidth}
-                        height={90}
-                      />
-                    </View>
-                    <Text style={styles.humanReadable}>
-                      {barcode.humanReadable}
-                    </Text>
-
-                    <View style={styles.barcodeActions}>
-                      <Pressable
-                        style={styles.actionButton}
-                        onPress={copyToClipboard}
-                      >
-                        <Feather
-                          name={copied ? "check" : "copy"}
-                          size={16}
-                          color={
-                            copied ? palette.teal : palette.textSecondary
-                          }
+                  {renderedBarcodes.map(({ sscc, data }, idx) => (
+                    <View
+                      key={sscc}
+                      style={[
+                        styles.barcodeCard,
+                        idx > 0 && styles.barcodeCardSpacer,
+                      ]}
+                    >
+                      <View style={styles.barcodeContainer}>
+                        <BarcodeView
+                          data={data}
+                          width={barcodeWidth}
+                          height={90}
                         />
-                        <Text
-                          style={[
-                            styles.actionText,
-                            copied && { color: palette.teal },
-                          ]}
+                      </View>
+                      <Text style={styles.humanReadable}>
+                        {data.humanReadable}
+                      </Text>
+
+                      <View style={styles.barcodeActions}>
+                        <Pressable
+                          style={styles.actionButton}
+                          onPress={() => copyToClipboard(sscc)}
                         >
-                          {copied ? "Copied" : "Copy"}
-                        </Text>
-                      </Pressable>
+                          <Feather
+                            name={copiedSSCC === sscc ? "check" : "copy"}
+                            size={16}
+                            color={
+                              copiedSSCC === sscc
+                                ? palette.teal
+                                : palette.textSecondary
+                            }
+                          />
+                          <Text
+                            style={[
+                              styles.actionText,
+                              copiedSSCC === sscc && { color: palette.teal },
+                            ]}
+                          >
+                            {copiedSSCC === sscc ? "Copied" : "Copy"}
+                          </Text>
+                        </Pressable>
+                      </View>
                     </View>
-                  </View>
+                  ))}
                 </Animated.View>
               )}
 
@@ -934,6 +980,9 @@ export default function MainScreen() {
                 <Feather name="x" size={24} color={palette.white} />
               </Pressable>
             </View>
+            <Text style={styles.modalHint}>
+              Tap rows to add one-by-one, or render all at once.
+            </Text>
 
             <ScrollView
               style={styles.modalScroll}
@@ -961,7 +1010,7 @@ export default function MainScreen() {
                 size={20}
                 color={palette.navy}
               />
-              <Text style={styles.generateButtonText}>Generate All</Text>
+              <Text style={styles.generateButtonText}>Render All</Text>
             </Pressable>
           </View>
         </View>
@@ -1149,6 +1198,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: palette.border,
   },
+  barcodeCardSpacer: {
+    marginTop: 12,
+  },
   barcodeContainer: {
     backgroundColor: "#FFFFFF",
     borderRadius: 8,
@@ -1273,6 +1325,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontFamily: "Inter_600SemiBold",
     color: palette.white,
+  },
+  modalHint: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: palette.textTertiary,
+    marginBottom: 12,
   },
   modalScroll: {
     maxHeight: 300,
