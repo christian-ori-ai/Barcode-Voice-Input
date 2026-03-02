@@ -7,12 +7,20 @@ interface BarcodeViewProps {
   data: BarcodeData;
   width?: number;
   height?: number;
+  quietZoneModules?: number;
 }
 
-export default function BarcodeView({ data, width = 320, height = 100 }: BarcodeViewProps) {
+export default function BarcodeView({
+  data,
+  width = 320,
+  height = 100,
+  quietZoneModules = 10,
+}: BarcodeViewProps) {
   const barElements = useMemo(() => {
     const totalBars = data.bars.length;
-    const barWidth = width / totalBars;
+    const totalModules = totalBars + quietZoneModules * 2;
+    const moduleWidth = width / totalModules;
+    const startX = quietZoneModules * moduleWidth;
     const elements: React.ReactElement[] = [];
 
     let runStart = 0;
@@ -24,11 +32,11 @@ export default function BarcodeView({ data, width = 320, height = 100 }: Barcode
           elements.push(
             <Rect
               key={runStart}
-              x={runStart * barWidth}
+              x={startX + runStart * moduleWidth}
               y={0}
-              width={(i - runStart) * barWidth}
+              width={(i - runStart) * moduleWidth}
               height={height}
-              fill="#FFFFFF"
+              fill="#000000"
             />
           );
         }
@@ -40,7 +48,7 @@ export default function BarcodeView({ data, width = 320, height = 100 }: Barcode
     }
 
     return elements;
-  }, [data.bars, width, height]);
+  }, [data.bars, width, height, quietZoneModules]);
 
   return (
     <View style={[styles.container, { width, height }]}>
@@ -53,7 +61,7 @@ export default function BarcodeView({ data, width = 320, height = 100 }: Barcode
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: "#000000",
+    backgroundColor: "#FFFFFF",
     borderRadius: 4,
     overflow: "hidden",
   },
