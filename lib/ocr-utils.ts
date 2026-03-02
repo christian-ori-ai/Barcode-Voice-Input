@@ -1,7 +1,7 @@
 import { calculateSSCCCheckDigit } from "@/lib/code128";
 
-const DIGIT_RUN_REGEX = /\d{18,30}/g;
-const DIGIT_JOINER_REGEX = /(\d)[\s\-()]+(?=\d)/g;
+const DIGIT_RUN_REGEX = /\d{18,40}/g;
+const DIGIT_JOINER_REGEX = /(\d)[\s\-().,:]+(?=\d)/g;
 const OCR_NUMERIC_CHUNK_REGEX = /[\dOQDISBZL|()\-\s]{18,40}/gi;
 
 const OCR_DIGIT_CHAR_MAP: Record<string, string> = {
@@ -47,7 +47,9 @@ function expandRunToCandidates(run: string): string[] {
 
   const candidates = new Set<string>();
 
-  candidates.add(run.slice(-18));
+  for (let i = 0; i <= run.length - 18; i++) {
+    candidates.add(run.slice(i, i + 18));
+  }
 
   if (run.startsWith("00") && run.length >= 20) {
     candidates.add(run.slice(2, 20));
