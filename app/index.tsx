@@ -714,6 +714,13 @@ export default function MainScreen() {
     );
   };
 
+  const clearGeneratedBarcodes = useCallback(() => {
+    setRenderedSSCCs([]);
+    setActiveBarcodeIndex(0);
+    setCopiedSSCC(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }, []);
+
   return (
     <View style={[styles.container, { paddingTop: insets.top + webTopInset }]}>
       <StatusBar style="light" />
@@ -947,6 +954,12 @@ export default function MainScreen() {
                 <Animated.View
                   style={[styles.barcodeSection, barcodeAnimStyle]}
                 >
+                  <View style={styles.barcodeHeaderRow}>
+                    <Text style={styles.sectionTitle}>Generated</Text>
+                    <Pressable onPress={clearGeneratedBarcodes}>
+                      <Text style={styles.clearAllText}>Clear Generated</Text>
+                    </Pressable>
+                  </View>
                   <ScrollView
                     key={renderedBarcodes[0]?.sscc ?? "barcode-carousel"}
                     horizontal
@@ -1297,6 +1310,12 @@ const styles = StyleSheet.create({
   barcodeSection: {
     marginTop: 24,
     width: "100%",
+  },
+  barcodeHeaderRow: {
+    marginBottom: 10,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   barcodeCarouselContent: {
     alignItems: "stretch",
