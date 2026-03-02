@@ -8,6 +8,13 @@
       "developmentClient": true,
       "distribution": "internal"
     },
+    "ios-internal": {
+      "distribution": "internal",
+      "channel": "internal",
+      "ios": {
+        "simulator": false
+      }
+    },
     "preview": {
       "distribution": "internal",
       "android": {
