@@ -44,7 +44,9 @@ const { palette } = Colors;
 const HISTORY_KEY = "sscc_history";
 const MANUAL_ONLY_KEY = "manual_only_mode";
 const OMIT_PREFIX_KEY = "omit_leading_prefix";
+const PRIVACY_MODE_KEY = "privacy_mode";
 const SSCC_PREFIX = "00";
+const CLIPBOARD_CLEAR_DELAY_MS = 30000;
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 interface HistoryItem {
@@ -247,6 +249,7 @@ export default function MainScreen() {
   const [ocrModalVisible, setOcrModalVisible] = useState(false);
   const [manualOnlyMode, setManualOnlyMode] = useState(false);
   const [omitLeadingPrefix, setOmitLeadingPrefix] = useState(false);
+  const [privacyMode, setPrivacyMode] = useState(false);
 
   const {
     isListening,
@@ -306,13 +309,17 @@ export default function MainScreen() {
   useEffect(() => {
     const loadPersistedData = async () => {
       try {
-        const [historyData, manualOnlyData, omitPrefixData] = await Promise.all([
+        const [historyData, manualOnlyData, omitPrefixData, privacyModeData] = await Promise.all([
           AsyncStorage.getItem(HISTORY_KEY),
           AsyncStorage.getItem(MANUAL_ONLY_KEY),
           AsyncStorage.getItem(OMIT_PREFIX_KEY),
+          AsyncStorage.getItem(PRIVACY_MODE_KEY),
         ]);
 
-        if (historyData) {
+        const isPrivacyModeEnabled = privacyModeData === "true";
+        setPrivacyMode(isPrivacyModeEnabled);
+
+        if (!isPrivacyModeEnabled && historyData) {
           setHistory(JSON.parse(historyData));
         }
 
@@ -331,9 +338,13 @@ export default function MainScreen() {
 
   const saveHistory = useCallback(async (items: HistoryItem[]) => {
     try {
+      if (privacyMode) {
+        await AsyncStorage.removeItem(HISTORY_KEY);
+        return;
+      }
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(items));
     } catch {}
-  }, []);
+  }, [privacyMode]);
 
   const saveManualOnlyMode = async (enabled: boolean) => {
     try {
@@ -344,6 +355,12 @@ export default function MainScreen() {
   const saveOmitPrefixMode = async (enabled: boolean) => {
     try {
       await AsyncStorage.setItem(OMIT_PREFIX_KEY, enabled ? "true" : "false");
+    } catch {}
+  };
+
+  const savePrivacyMode = async (enabled: boolean) => {
+    try {
+      await AsyncStorage.setItem(PRIVACY_MODE_KEY, enabled ? "true" : "false");
     } catch {}
   };
 
@@ -367,8 +384,24 @@ export default function MainScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
+  const togglePrivacyMode = async (enabled: boolean) => {
+    setPrivacyMode(enabled);
+    await savePrivacyMode(enabled);
+
+    if (enabled) {
+      setHistory([]);
+      try {
+        await AsyncStorage.removeItem(HISTORY_KEY);
+      } catch {}
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
   const addSSCCsToHistory = useCallback(
     (ssccs: string[]) => {
+      if (privacyMode) return;
+
       const uniqueSSCCs = Array.from(new Set(ssccs));
       if (uniqueSSCCs.length === 0) return;
 
@@ -385,7 +418,7 @@ export default function MainScreen() {
         return updated;
       });
     },
-    [saveHistory]
+    [privacyMode, saveHistory]
   );
 
   const renderSSCCBarcodes = useCallback(
@@ -486,14 +519,22 @@ export default function MainScreen() {
   );
 
   const copyToClipboard = async (sscc: string) => {
-    await Clipboard.setStringAsync(
-      formatSSCCDisplay(sscc, !omitLeadingPrefix)
-    );
+    const copyValue = formatSSCCDisplay(sscc, !omitLeadingPrefix);
+    await Clipboard.setStringAsync(copyValue);
     setCopiedSSCC(sscc);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setTimeout(() => {
       setCopiedSSCC((current) => (current === sscc ? null : current));
     }, 2000);
+
+    setTimeout(async () => {
+      try {
+        const currentClipboard = await Clipboard.getStringAsync();
+        if (currentClipboard === copyValue) {
+          await Clipboard.setStringAsync("");
+        }
+      } catch {}
+    }, CLIPBOARD_CLEAR_DELAY_MS);
   };
 
   const handleMicPress = () => {
@@ -657,6 +698,7 @@ export default function MainScreen() {
   const barcodeWidth = Math.min(SCREEN_WIDTH - 48, 360);
   const webTopInset = Platform.OS === "web" ? 67 : 0;
   const webBottomInset = Platform.OS === "web" ? 34 : 0;
+  const historyItems = privacyMode ? [] : history;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + webTopInset }]}>
@@ -668,7 +710,7 @@ export default function MainScreen() {
         keyboardVerticalOffset={0}
       >
         <FlatList
-          data={history}
+          data={historyItems}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[
             styles.scrollContent,
@@ -676,7 +718,7 @@ export default function MainScreen() {
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          scrollEnabled={history.length > 0}
+          scrollEnabled={historyItems.length > 0}
           ListHeaderComponent={
             <View>
               <View style={styles.header}>
@@ -777,8 +819,26 @@ export default function MainScreen() {
                   />
                 </View>
 
+                <View style={styles.modeToggleRow}>
+                  <Text style={styles.modeToggleText}>
+                    Privacy Mode (No History)
+                  </Text>
+                  <Switch
+                    value={privacyMode}
+                    onValueChange={togglePrivacyMode}
+                    trackColor={{
+                      false: palette.border,
+                      true: palette.teal,
+                    }}
+                    thumbColor={privacyMode ? palette.navy : palette.white}
+                    ios_backgroundColor={palette.border}
+                  />
+                </View>
+
                 <Text style={styles.inputLabel}>
-                  {manualOnlyMode
+                  {privacyMode
+                    ? "Privacy Mode is on. History is disabled and copied values auto-clear."
+                    : manualOnlyMode
                     ? "Manual-Only Mode is on. Type SSCC digits directly."
                     : isListening
                       ? "Listening... speak the digits"
@@ -921,7 +981,7 @@ export default function MainScreen() {
                 </Animated.View>
               )}
 
-              {history.length > 0 && (
+              {historyItems.length > 0 && (
                 <View style={styles.historyHeader}>
                   <Text style={styles.sectionTitle}>Recent</Text>
                   <Pressable
@@ -952,9 +1012,13 @@ export default function MainScreen() {
                 size={40}
                 color={palette.textTertiary}
               />
-              <Text style={styles.emptyText}>No barcodes yet</Text>
+              <Text style={styles.emptyText}>
+                {privacyMode ? "History disabled" : "No barcodes yet"}
+              </Text>
               <Text style={styles.emptySubtext}>
-                Enter an SSCC number to create your first barcode
+                {privacyMode
+                  ? "Turn off Privacy Mode to keep recent scans."
+                  : "Enter an SSCC number to create your first barcode"}
               </Text>
             </View>
           }
