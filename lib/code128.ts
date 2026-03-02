@@ -24,6 +24,10 @@ export interface BarcodeData {
   humanReadable: string;
 }
 
+interface EncodeSSCCOptions {
+  includeApplicationIdentifier?: boolean;
+}
+
 function patternToBars(pattern: string): boolean[] {
   const bars: boolean[] = [];
   let isBar = true;
@@ -48,10 +52,18 @@ export function calculateSSCCCheckDigit(digits17: string): number {
   return remainder === 0 ? 0 : 10 - remainder;
 }
 
-export function encodeSSCC(ssccDigits: string): BarcodeData {
-  const fullData = "00" + ssccDigits;
+export function encodeSSCC(
+  ssccDigits: string,
+  options: EncodeSSCCOptions = {}
+): BarcodeData {
+  const includeApplicationIdentifier =
+    options.includeApplicationIdentifier ?? true;
+  const fullData = includeApplicationIdentifier ? "00" + ssccDigits : ssccDigits;
 
-  const values: number[] = [START_C, FNC1];
+  const values: number[] = [START_C];
+  if (includeApplicationIdentifier) {
+    values.push(FNC1);
+  }
 
   for (let i = 0; i < fullData.length; i += 2) {
     const pair = fullData.substring(i, i + 2);
@@ -72,7 +84,9 @@ export function encodeSSCC(ssccDigits: string): BarcodeData {
     allBars.push(...patternToBars(PATTERNS[val]));
   }
 
-  const humanReadable = "00" + ssccDigits;
+  const humanReadable = includeApplicationIdentifier
+    ? "00" + ssccDigits
+    : ssccDigits;
 
   return { bars: allBars, humanReadable };
 }

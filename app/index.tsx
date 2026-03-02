@@ -44,6 +44,7 @@ import { extractSSCCsOnDevice, OCRImageInput } from "@/lib/ocr";
 const { palette } = Colors;
 const HISTORY_KEY = "sscc_history";
 const MANUAL_ONLY_KEY = "manual_only_mode";
+const OMIT_PREFIX_KEY = "omit_leading_prefix";
 const SSCC_PREFIX = "00";
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -55,8 +56,8 @@ interface HistoryItem {
 
 type OCRImageSource = "camera" | "gallery";
 
-function formatSSCCDisplay(sscc: string): string {
-  return `${SSCC_PREFIX}${sscc}`;
+function formatSSCCDisplay(sscc: string, includePrefix = true): string {
+  return includePrefix ? `${SSCC_PREFIX}${sscc}` : sscc;
 }
 
 function useSpeechRecognition() {
@@ -125,10 +126,12 @@ function HistoryRow({
   item,
   onSelect,
   onDelete,
+  includePrefix,
 }: {
   item: HistoryItem;
   onSelect: (s: string) => void;
   onDelete: (id: string) => void;
+  includePrefix: boolean;
 }) {
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({
@@ -157,7 +160,9 @@ function HistoryRow({
             color={palette.teal}
           />
           <View style={styles.historyTextContainer}>
-            <Text style={styles.historySSCC}>{formatSSCCDisplay(item.sscc)}</Text>
+            <Text style={styles.historySSCC}>
+              {formatSSCCDisplay(item.sscc, includePrefix)}
+            </Text>
             <Text style={styles.historyDate}>
               {new Date(item.createdAt).toLocaleDateString(undefined, {
                 month: "short",
@@ -185,9 +190,11 @@ function HistoryRow({
 function OCRResultItem({
   sscc,
   onGenerate,
+  includePrefix,
 }: {
   sscc: string;
   onGenerate: (s: string) => void;
+  includePrefix: boolean;
 }) {
   const scale = useSharedValue(1);
   const animStyle = useAnimatedStyle(() => ({
@@ -216,7 +223,9 @@ function OCRResultItem({
             color={palette.teal}
           />
           <View>
-            <Text style={styles.ocrResultSSCC}>{formatSSCCDisplay(sscc)}</Text>
+            <Text style={styles.ocrResultSSCC}>
+              {formatSSCCDisplay(sscc, includePrefix)}
+            </Text>
             <Text style={styles.ocrResultSub}>Tap to generate barcode</Text>
           </View>
         </View>
@@ -238,6 +247,7 @@ export default function MainScreen() {
   const [ocrResults, setOcrResults] = useState<string[]>([]);
   const [ocrModalVisible, setOcrModalVisible] = useState(false);
   const [manualOnlyMode, setManualOnlyMode] = useState(false);
+  const [omitLeadingPrefix, setOmitLeadingPrefix] = useState(false);
 
   const {
     isListening,
@@ -286,9 +296,10 @@ export default function MainScreen() {
   useEffect(() => {
     const loadPersistedData = async () => {
       try {
-        const [historyData, manualOnlyData] = await Promise.all([
+        const [historyData, manualOnlyData, omitPrefixData] = await Promise.all([
           AsyncStorage.getItem(HISTORY_KEY),
           AsyncStorage.getItem(MANUAL_ONLY_KEY),
+          AsyncStorage.getItem(OMIT_PREFIX_KEY),
         ]);
 
         if (historyData) {
@@ -297,6 +308,10 @@ export default function MainScreen() {
 
         if (manualOnlyData !== null) {
           setManualOnlyMode(manualOnlyData === "true");
+        }
+
+        if (omitPrefixData !== null) {
+          setOmitLeadingPrefix(omitPrefixData === "true");
         }
       } catch {}
     };
@@ -316,6 +331,12 @@ export default function MainScreen() {
     } catch {}
   };
 
+  const saveOmitPrefixMode = async (enabled: boolean) => {
+    try {
+      await AsyncStorage.setItem(OMIT_PREFIX_KEY, enabled ? "true" : "false");
+    } catch {}
+  };
+
   const toggleManualOnlyMode = async (enabled: boolean) => {
     setManualOnlyMode(enabled);
     await saveManualOnlyMode(enabled);
@@ -330,9 +351,17 @@ export default function MainScreen() {
     }
   };
 
+  const toggleOmitLeadingPrefix = async (enabled: boolean) => {
+    setOmitLeadingPrefix(enabled);
+    await saveOmitPrefixMode(enabled);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
   const generateBarcodeFromSSCC = useCallback(
     (sscc: string, addToHistory = true) => {
-      const encoded = encodeSSCC(sscc);
+      const encoded = encodeSSCC(sscc, {
+        includeApplicationIdentifier: !omitLeadingPrefix,
+      });
       setBarcode(encoded);
       setCurrentSSCC(sscc);
       setInput(sscc);
@@ -356,8 +385,18 @@ export default function MainScreen() {
         });
       }
     },
-    [barcodeOpacity]
+    [barcodeOpacity, omitLeadingPrefix]
   );
+
+  useEffect(() => {
+    if (!currentSSCC) return;
+
+    setBarcode(
+      encodeSSCC(currentSSCC, {
+        includeApplicationIdentifier: !omitLeadingPrefix,
+      })
+    );
+  }, [currentSSCC, omitLeadingPrefix]);
 
   const generateBarcode = useCallback(() => {
     const digits = input.replace(/\D/g, "");
@@ -410,7 +449,9 @@ export default function MainScreen() {
 
   const copyToClipboard = async () => {
     if (!currentSSCC) return;
-    await Clipboard.setStringAsync(formatSSCCDisplay(currentSSCC));
+    await Clipboard.setStringAsync(
+      formatSSCCDisplay(currentSSCC, !omitLeadingPrefix)
+    );
     setCopied(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setTimeout(() => setCopied(false), 2000);
@@ -686,6 +727,20 @@ export default function MainScreen() {
                   />
                 </View>
 
+                <View style={styles.modeToggleRow}>
+                  <Text style={styles.modeToggleText}>Omit leading 00</Text>
+                  <Switch
+                    value={omitLeadingPrefix}
+                    onValueChange={toggleOmitLeadingPrefix}
+                    trackColor={{
+                      false: palette.border,
+                      true: palette.teal,
+                    }}
+                    thumbColor={omitLeadingPrefix ? palette.navy : palette.white}
+                    ios_backgroundColor={palette.border}
+                  />
+                </View>
+
                 <Text style={styles.inputLabel}>
                   {manualOnlyMode
                     ? "Manual-Only Mode is on. Type SSCC digits directly."
@@ -697,9 +752,11 @@ export default function MainScreen() {
                 </Text>
 
                 <View style={styles.inputRow}>
-                  <View style={styles.prefixBadge}>
-                    <Text style={styles.prefixText}>{SSCC_PREFIX}</Text>
-                  </View>
+                  {!omitLeadingPrefix && (
+                    <View style={styles.prefixBadge}>
+                      <Text style={styles.prefixText}>{SSCC_PREFIX}</Text>
+                    </View>
+                  )}
                   <TextInput
                     style={styles.textInput}
                     value={input}
@@ -839,6 +896,7 @@ export default function MainScreen() {
               item={item}
               onSelect={selectFromHistory}
               onDelete={deleteFromHistory}
+              includePrefix={!omitLeadingPrefix}
             />
           )}
           ListEmptyComponent={
@@ -886,6 +944,7 @@ export default function MainScreen() {
                   key={idx}
                   sscc={sscc}
                   onGenerate={handleOCRSelect}
+                  includePrefix={!omitLeadingPrefix}
                 />
               ))}
             </ScrollView>
