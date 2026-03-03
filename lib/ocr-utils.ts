@@ -1,8 +1,8 @@
 import { calculateSSCCCheckDigit } from "@/lib/code128";
 
-const DIGIT_RUN_REGEX = /\d{18,40}/g;
+const DIGIT_RUN_REGEX = /\d{18,}/g;
 const DIGIT_JOINER_REGEX = /(\d)[\s\-().,:]+(?=\d)/g;
-const OCR_NUMERIC_CHUNK_REGEX = /[\dOQDISBZL|()\-\s]{18,40}/gi;
+const OCR_NUMERIC_CHUNK_REGEX = /[\dOQDISBZL|()\-\s]{18,120}/gi;
 
 const OCR_DIGIT_CHAR_MAP: Record<string, string> = {
   O: "0",
@@ -46,6 +46,13 @@ function expandRunToCandidates(run: string): string[] {
   if (run.length === 18) return [run];
 
   const candidates = new Set<string>();
+
+  // When OCR joins multiple SSCCs with no delimiter, retain exact 18-digit chunking.
+  if (run.length % 18 === 0) {
+    for (let i = 0; i < run.length; i += 18) {
+      candidates.add(run.slice(i, i + 18));
+    }
+  }
 
   for (let i = 0; i <= run.length - 18; i++) {
     candidates.add(run.slice(i, i + 18));
